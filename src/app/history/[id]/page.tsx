@@ -15,9 +15,8 @@ export default function HistoryItemPage() {
   const [markdownContent, setMarkdownContent] = useState('');
 
   useEffect(() => {
-    // Carregar item do histórico
     const savedHistory = localStorage.getItem('research_history');
-    if (savedHistory) {
+    if (savedHistory && params?.id) {
       const history = JSON.parse(savedHistory);
       const item = history.find((h: ResearchHistoryItem) => h.id === params.id);
       if (item) {
@@ -25,7 +24,7 @@ export default function HistoryItemPage() {
         setMarkdownContent(item.report);
       }
     }
-  }, [params.id]);
+  }, [params?.id]);
 
   const handleCopy = async (text: string, section: string) => {
     await navigator.clipboard.writeText(text);
