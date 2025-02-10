@@ -58,18 +58,18 @@ export function getModel(config?: LLMConfig) {
         'X-Title': 'Deep Research App',
       }
     });
-    return provider(config.model, {
-      temperature: config.temperature || 0.7,
+    return provider.chat(config.model, {
       maxTokens: config.maxTokens || 4000,
+      temperature: config.temperature || 0.7,
     });
   } else {
     const provider = createOpenAI({
       apiKey: config.apiKey,
       baseURL: 'https://api.openai.com/v1',
     });
-    return provider(config.model, {
-      temperature: config.temperature || 0.7,
+    return provider.chat(config.model, {
       maxTokens: config.maxTokens || 4000,
+      temperature: config.temperature || 0.7,
     });
   }
 }

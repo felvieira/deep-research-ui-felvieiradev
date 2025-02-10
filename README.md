@@ -2,6 +2,8 @@
 
 Interface moderna para pesquisa avançada usando IA, construída com Next.js e Tailwind CSS. O sistema permite realizar pesquisas profundas e gerar relatórios detalhados e estruturados.
 
+![Deep Research UI Screenshot](print.png)
+
 Inspirado e baseado no Deep Research do David Zhang.
 https://github.com/dzhng/deep-research
 
