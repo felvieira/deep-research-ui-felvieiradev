@@ -69,7 +69,7 @@ async function run() {
   const combinedQuery = `
 Initial Query: ${initialQuery}
 Follow-up Questions and Answers:
-${followUpQuestions.map((q, i) => `Q: ${q}\nA: ${answers[i]}`).join('\n')}
+${followUpQuestions.map((q: string, i: number) => `Q: ${q}\nA: ${answers[i]}`).join('\n')}
 `;
 
   console.log('\nResearching your topic...');

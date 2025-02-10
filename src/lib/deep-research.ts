@@ -23,7 +23,11 @@ const createFirecrawl = (firecrawlKey: string) => new FirecrawlApp({
 const MAX_CONTENT_TOKENS = 150000; // Leave room for system prompt and response
 const MAX_CONTENTS_PER_SEARCH = 3; // Limit number of search results processed
 
-// take in user query, return a list of SERP queries
+interface SerpQuery {
+  query: string;
+  researchGoal?: string;
+}
+
 async function generateSerpQueries({
   query,
   numQueries = 3,
@@ -34,33 +38,22 @@ async function generateSerpQueries({
   numQueries?: number;
   learnings?: string[];
   llmConfig: LLMConfig;
-}) {
-  const model = getModel(llmConfig);
+}): Promise<SerpQuery[]> {
+  const model = await getModel(llmConfig);
+
+  const schema = z.object({
+    queries: z.array(z.object({
+      query: z.string(),
+      researchGoal: z.string().optional()
+    }))
+  });
   
   const res = await generateObject({
     model,
-    system: systemPrompt(),
+    schema,
     prompt: `Dado o seguinte tópico de pesquisa do usuário, gere ${numQueries} queries de busca para pesquisar o assunto. IMPORTANTE: Retorne apenas o objeto JSON puro, sem formatação markdown ou código: <query>${query}</query>
 
-${learnings ? `Aqui estão alguns aprendizados da pesquisa anterior, use-os para gerar queries mais específicas: ${learnings.join('\n')}` : ''}
-
-Formato da resposta:
-{
-  "queries": [
-    {
-      "query": "Primeira query de busca aqui",
-      "researchGoal": "Objetivo desta busca e direções adicionais de pesquisa"
-    }
-  ]
-}`,
-    schema: z.object({
-      queries: z.array(
-        z.object({
-          query: z.string().describe('A query de busca'),
-          researchGoal: z.string().describe('Objetivo da pesquisa e direções adicionais'),
-        }),
-      ).min(1).max(numQueries),
-    }),
+${learnings ? `Aqui estão alguns aprendizados da pesquisa anterior, use-os para gerar queries mais específicas: ${learnings.join('\n')}` : ''}`
   });
 
   return res.object.queries;
@@ -79,7 +72,7 @@ async function processSerpResult({
   numFollowUpQuestions?: number;
   llmConfig: LLMConfig;
 }) {
-  const model = getModel(llmConfig);
+  const model = await getModel(llmConfig);
   
   const contents = compact(result.data
     .slice(0, MAX_CONTENTS_PER_SEARCH)
@@ -90,29 +83,19 @@ async function processSerpResult({
     totalContent = totalContent.slice(0, MAX_CONTENT_TOKENS) + '...';
   }
 
+  const schema = z.object({
+    learnings: z.array(z.string()).length(numLearnings),
+    followUpQuestions: z.array(z.string()).length(numFollowUpQuestions),
+  });
+
   const res = await generateObject({
     model,
-    abortSignal: AbortSignal.timeout(60_000),
+    schema,
     system: systemPrompt(),
     prompt: `Dado o seguinte conteúdo de uma busca para a query <query>${query}</query>, gere uma lista de aprendizados. IMPORTANTE: Retorne apenas o objeto JSON puro, sem formatação markdown ou código.
 
-<contents>${totalContent}</contents>
-
-Formato da resposta (retorne exatamente ${numLearnings} learnings e ${numFollowUpQuestions} followUpQuestions):
-{
-  "learnings": [
-    "Primeiro aprendizado aqui",
-    "Segundo aprendizado aqui",
-    "Terceiro aprendizado aqui"
-  ],
-  "followUpQuestions": [
-    "Primeira pergunta de acompanhamento"
-  ]
-}`,
-    schema: z.object({
-      learnings: z.array(z.string()).length(numLearnings),
-      followUpQuestions: z.array(z.string()).length(numFollowUpQuestions),
-    }),
+<contents>${totalContent}</contents>`,
+    temperature: 0.7,
   });
 
   return res.object;
@@ -135,26 +118,24 @@ export interface WriteFinalReportParams {
 }
 
 export async function writeFinalReport({ prompt, learnings, visitedUrls, llmConfig }: WriteFinalReportParams) {
-  const model = getModel(llmConfig);
+  const model = await getModel(llmConfig);
   
   try {
+    const schema = z.object({
+      reportMarkdown: z.string().min(1),
+    });
+
     const res = await generateObject({
       model,
+      schema,
       system: systemPrompt(),
       prompt: `Escreva um relatório detalhado baseado nos aprendizados da pesquisa. IMPORTANTE: Retorne apenas o objeto JSON puro, sem formatação markdown ou código.
 
 Prompt do usuário: "${prompt}"
 
 Aprendizados da pesquisa:
-${learnings.map((learning, i) => `${i + 1}. ${learning}`).join('\n')}
-
-Formato da resposta (retorne exatamente neste formato):
-{
-  "reportMarkdown": "# Título do Relatório\\n\\n## Introdução\\n\\nTexto da introdução...\\n\\n## Desenvolvimento\\n\\nConteúdo principal...\\n\\n## Conclusão\\n\\nConsiderações finais..."
-}`,
-      schema: z.object({
-        reportMarkdown: z.string().min(1),
-      }),
+${learnings.map((learning, i) => `${i + 1}. ${learning}`).join('\n')}`,
+      temperature: 0.7,
     });
 
     // Adiciona a seção de fontes ao relatório
@@ -207,15 +188,23 @@ ${visitedUrls.map(url => `- ${url}`).join('\n')}`;
 async function searchAndSummarize({
   query,
   llmConfig,
+  breadth = 3,
+  depth = 2,
+  learnings = [],
+  visitedUrls = []
 }: {
   query: string;
   llmConfig: LLMConfig;
+  breadth?: number;
+  depth?: number;
+  learnings?: string[];
+  visitedUrls?: string[];
 }): Promise<ResearchResult> {
   if (!llmConfig.firecrawlKey) {
     throw new Error('Firecrawl API key is required');
   }
 
-  const model = getModel(llmConfig);
+  const model = await getModel(llmConfig);
   const firecrawl = createFirecrawl(llmConfig.firecrawlKey);
   
   // Generate SERP queries
@@ -223,7 +212,7 @@ async function searchAndSummarize({
   
   // Search and process results in parallel with concurrency limit
   const limit = pLimit(ConcurrencyLimit);
-  const searchPromises = serpQueries.queries.map((serpQuery) =>
+  const searchPromises = serpQueries.map((serpQuery) =>
     limit(async () => {
       try {
         const result = await firecrawl.search(serpQuery.query, {
@@ -251,7 +240,7 @@ async function searchAndSummarize({
           );
 
           const nextQuery = `
-            Previous research goal: ${serpQuery.researchGoal}
+            Previous research goal: ${serpQuery.researchGoal || 'Not specified'}
             Follow-up research directions: ${newLearnings.followUpQuestions.map(q => `\n${q}`).join('')}
           `.trim();
 
@@ -306,7 +295,11 @@ export async function deepResearch({
     serpQueries.map(serpQuery =>
       limit(async () => {
         try {
-          const result = await createFirecrawl(process.env.FIRECRAWL_KEY!).search(serpQuery.query, {
+          if (!llmConfig.firecrawlKey) {
+            throw new Error('Firecrawl API key is required');
+          }
+
+          const result = await createFirecrawl(llmConfig.firecrawlKey).search(serpQuery.query, {
             timeout: 15000,
             scrapeOptions: { formats: ['markdown'] },
           });
@@ -331,7 +324,7 @@ export async function deepResearch({
             );
 
             const nextQuery = `
-              Previous research goal: ${serpQuery.researchGoal}
+              Previous research goal: ${serpQuery.researchGoal || 'Not specified'}
               Follow-up research directions: ${newLearnings.followUpQuestions.map(q => `\n${q}`).join('')}
             `.trim();
 

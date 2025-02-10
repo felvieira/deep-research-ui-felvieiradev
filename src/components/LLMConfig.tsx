@@ -62,8 +62,8 @@ export function LLMConfig({ config, onConfigChange, hideTitle, onClose }: LLMCon
       try {
         const models = await fetchAvailableModels(localConfig);
         const sortedModels = models.sort((a, b) => {
-          const costA = a.pricing?.prompt || 0 + a.pricing?.completion || 0;
-          const costB = b.pricing?.prompt || 0 + b.pricing?.completion || 0;
+          const costA = (a.pricing?.prompt || 0) + (a.pricing?.completion || 0);
+          const costB = (b.pricing?.prompt || 0) + (b.pricing?.completion || 0);
           return costA - costB;
         });
         setApiModels(sortedModels);
@@ -77,7 +77,7 @@ export function LLMConfig({ config, onConfigChange, hideTitle, onClose }: LLMCon
     if (localConfig.provider === 'openrouter' && localConfig.apiKey) {
       loadModels();
     }
-  }, [localConfig.provider, localConfig.apiKey]);
+  }, [localConfig]);
 
   const handleChange = (field: keyof LLMConfigType, value: string | number) => {
     const newConfig = {
@@ -89,10 +89,11 @@ export function LLMConfig({ config, onConfigChange, hideTitle, onClose }: LLMCon
     if (field === 'provider') {
       newConfig.model = '';
       newConfig.apiKey = '';
+      newConfig.provider = value as ProviderType;
     }
 
-    setLocalConfig(newConfig);
-    onConfigChange(newConfig); // Notificar mudança imediatamente
+    setLocalConfig(newConfig as LLMConfigType);
+    onConfigChange(newConfig as LLMConfigType);
   };
 
   const handleSave = () => {

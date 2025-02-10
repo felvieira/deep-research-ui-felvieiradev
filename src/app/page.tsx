@@ -6,19 +6,17 @@ import { ResearchForm } from '@/components/ResearchForm';
 import { ResearchHistory, ResearchHistoryItem } from '@/components/ResearchHistory';
 import { LLMConfig } from '@/components/LLMConfig';
 import { HistoryItemView } from '@/components/HistoryItemView';
-import { loadConfig } from '@/ai/providers';
+import { loadConfig, type LLMConfig as LLMConfigType, type ProviderType } from '@/ai/providers';
 import { features } from '@/data/features';
 
-const defaultLLMConfig = {
-  provider: 'openrouter',
+const defaultLLMConfig: LLMConfigType = {
+  provider: 'openrouter' as const,
   model: 'openai/gpt-3.5-turbo',
   apiKey: '',
   firecrawlKey: '',
   temperature: 0.7,
   maxTokens: 4000,
 };
-
-type LLMConfigType = typeof defaultLLMConfig;
 
 export default function Home() {
   const [darkMode, setDarkMode] = useState<boolean | null>(null);
@@ -34,10 +32,11 @@ export default function Home() {
     const savedConfig = loadConfig();
     if (savedConfig) {
       // Garantir que temos as chaves de API
-      const config = {
+      const config: LLMConfigType = {
         ...defaultLLMConfig,
         ...savedConfig,
         // Garantir que as chaves não sejam undefined
+        provider: savedConfig.provider as ProviderType,
         apiKey: savedConfig.apiKey || '',
         firecrawlKey: savedConfig.firecrawlKey || '',
         temperature: savedConfig.temperature || defaultLLMConfig.temperature,
@@ -51,6 +50,33 @@ export default function Home() {
   useEffect(() => {
     setDarkMode(window.matchMedia('(prefers-color-scheme: dark)').matches);
   }, []);
+
+  const ensureProviderType = (config: Omit<LLMConfigType, 'provider'> & { provider: string }): LLMConfigType => {
+    if (config.provider !== 'openai' && config.provider !== 'openrouter') {
+      throw new Error('Invalid provider type');
+    }
+    return config as LLMConfigType;
+  };
+
+  const handleChange = (field: keyof LLMConfigType, value: string | number) => {
+    setLLMConfig(prevConfig => {
+      if (field === 'provider') {
+        if (value !== 'openai' && value !== 'openrouter') {
+          throw new Error('Invalid provider type');
+        }
+        return {
+          ...prevConfig,
+          provider: value as ProviderType,
+          model: '',
+          apiKey: ''
+        };
+      }
+      return {
+        ...prevConfig,
+        [field]: value
+      };
+    });
+  };
 
   if (darkMode === null) {
     return null;
@@ -125,9 +151,10 @@ export default function Home() {
                   onSelectHistory={(item) => {
                     setSelectedHistoryItem(item);
                     if (item.llmConfig) {
-                      const config = {
+                      const config: LLMConfigType = {
                         ...defaultLLMConfig,
                         ...item.llmConfig,
+                        provider: item.llmConfig.provider as ProviderType
                       };
                       setLLMConfig(config);
                     }

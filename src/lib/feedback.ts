@@ -34,8 +34,9 @@ export async function generateFeedback({
   
   try {
     console.log('Iniciando geração de feedback com modelo:', llmConfig.model);
+    const resolvedModel = await model;
     const response = await generateObject({
-      model,
+      model: resolvedModel,
       system: systemPrompt(),
       prompt: `Dado o seguinte tópico de pesquisa do usuário, gere ${numQuestions} perguntas de acompanhamento para entender melhor o que ele quer pesquisar. IMPORTANTE: Retorne apenas o objeto JSON puro, sem formatação markdown ou código: <query>${query}</query>
 
@@ -54,9 +55,12 @@ Formato da resposta:
 
     // Se falhar o parse do schema, tenta extrair manualmente
     if (!response.object?.questions) {
-      const parsed = extractJSON(response.text);
-      if (parsed?.questions) {
-        return parsed.questions;
+      const responseAny = response as any;
+      if (responseAny.text) {
+        const parsed = extractJSON(responseAny.text);
+        if (parsed?.questions) {
+          return parsed.questions;
+        }
       }
     }
 
@@ -64,9 +68,10 @@ Formato da resposta:
   } catch (error) {
     console.error('Erro ao gerar feedback:', error);
     // Se der erro no generateObject, tenta extrair JSON da resposta bruta
-    if (error.text) {
+    const errorAny = error as any;
+    if (errorAny.text) {
       try {
-        const parsed = extractJSON(error.text);
+        const parsed = extractJSON(errorAny.text);
         if (parsed?.questions) {
           return parsed.questions;
         }
@@ -77,4 +82,3 @@ Formato da resposta:
     throw error;
   }
 }
-  

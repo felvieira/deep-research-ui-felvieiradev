@@ -1,4 +1,5 @@
-import { createOpenAI } from '@ai-sdk/openai';
+import { createOpenAI, type OpenAIProviderSettings } from '@ai-sdk/openai';
+import { generateText } from 'ai';
 import { getEncoding } from 'js-tiktoken';
 
 import { RecursiveCharacterTextSplitter } from './text-splitter';
@@ -15,6 +16,10 @@ export type LLMConfig = {
   baseURL?: string;
 };
 
+interface CustomOpenAIProviderSettings extends OpenAIProviderSettings {
+  baseURL?: string;
+}
+
 // Providers
 export function getOpenAIProvider(config?: LLMConfig) {
   if (!config?.apiKey) {
@@ -24,7 +29,8 @@ export function getOpenAIProvider(config?: LLMConfig) {
   return createOpenAI({
     apiKey: config.apiKey,
     baseURL: config.baseURL || 'https://api.openai.com/v1',
-  });
+    compatibility: 'strict'
+  } as CustomOpenAIProviderSettings);
 }
 
 export function getOpenRouterProvider(config?: LLMConfig) {
@@ -39,11 +45,12 @@ export function getOpenRouterProvider(config?: LLMConfig) {
       'HTTP-Referer': 'https://deep-research.app',
       'X-Title': 'Deep Research App',
     },
-  });
+    compatibility: 'compatible'
+  } as CustomOpenAIProviderSettings);
 }
 
 // Models
-export function getModel(config?: LLMConfig) {
+export async function getModel(config?: LLMConfig) {
   if (!config?.apiKey) {
     throw new Error('API key is required');
   }
@@ -56,21 +63,19 @@ export function getModel(config?: LLMConfig) {
       headers: {
         'HTTP-Referer': 'https://deep-research.app',
         'X-Title': 'Deep Research App',
-      }
-    });
-    return provider.chat(config.model, {
-      maxTokens: config.maxTokens || 4000,
-      temperature: config.temperature || 0.7,
-    });
+      },
+      compatibility: 'compatible'
+    } as CustomOpenAIProviderSettings);
+
+    return provider(config.model);
   } else {
     const provider = createOpenAI({
       apiKey: config.apiKey,
       baseURL: 'https://api.openai.com/v1',
-    });
-    return provider.chat(config.model, {
-      maxTokens: config.maxTokens || 4000,
-      temperature: config.temperature || 0.7,
-    });
+      compatibility: 'strict'
+    } as CustomOpenAIProviderSettings);
+
+    return provider(config.model);
   }
 }
 
