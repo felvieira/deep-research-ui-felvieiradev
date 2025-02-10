@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  deep-research:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    image: deep-research:latest
+    container_name: deep-research
+    restart: unless-stopped
+    env_file:
+      - .env.local
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "http://localhost:3000"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
