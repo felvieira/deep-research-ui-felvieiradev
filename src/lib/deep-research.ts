@@ -13,11 +13,18 @@ type ResearchResult = {
 };
 
 // increase this if you have higher API rate limits
-const ConcurrencyLimit = 2;
+const ConcurrencyLimit = 1; // Reduzido para 1 para respeitar o limite do plano gratuito
+
+// Limites do plano gratuito do Firecrawl
+const RATE_LIMIT_DELAY = 6000; // 6 segundos entre requisições para ficar seguro (10 por minuto)
+const CRAWL_LIMIT_DELAY = 61000; // 61 segundos entre crawls para ficar seguro (1 por minuto)
 
 const createFirecrawl = (firecrawlKey: string) => new FirecrawlApp({
   apiKey: firecrawlKey,
 });
+
+// Função helper para delay
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 // Add token limits
 const MAX_CONTENT_TOKENS = 150000; // Leave room for system prompt and response
@@ -51,9 +58,25 @@ async function generateSerpQueries({
   const res = await generateObject({
     model,
     schema,
-    prompt: `Dado o seguinte tópico de pesquisa do usuário, gere ${numQueries} queries de busca para pesquisar o assunto. IMPORTANTE: Retorne apenas o objeto JSON puro, sem formatação markdown ou código: <query>${query}</query>
+    prompt: `Gere ${numQueries} queries de busca diferentes para pesquisar sobre este assunto. Cada query deve ser uma pergunta específica ou termo de busca relacionado ao tópico. IMPORTANTE: Retorne apenas o objeto JSON no formato especificado abaixo, sem formatação markdown ou código.
 
-${learnings ? `Aqui estão alguns aprendizados da pesquisa anterior, use-os para gerar queries mais específicas: ${learnings.join('\n')}` : ''}`
+Tópico de pesquisa: "${query}"
+
+${learnings ? `\nConsidere estes aprendizados prévios para gerar queries mais específicas:\n${learnings.join('\n')}` : ''}
+
+Formato esperado da resposta:
+{
+  "queries": [
+    {
+      "query": "primeira query aqui",
+      "researchGoal": "objetivo desta query"
+    },
+    {
+      "query": "segunda query aqui",
+      "researchGoal": "objetivo desta query"
+    }
+  ]
+}`
   });
 
   return res.object.queries;
@@ -210,67 +233,73 @@ async function searchAndSummarize({
   // Generate SERP queries
   const serpQueries = await generateSerpQueries({ query, llmConfig });
   
-  // Search and process results in parallel with concurrency limit
-  const limit = pLimit(ConcurrencyLimit);
-  const searchPromises = serpQueries.map((serpQuery) =>
-    limit(async () => {
-      try {
-        const result = await firecrawl.search(serpQuery.query, {
-          timeout: 15000,
-          scrapeOptions: { formats: ['markdown'] },
-        });
+  // Search and process results in sequence with rate limiting
+  const results = [];
+  for (const serpQuery of serpQueries) {
+    try {
+      // Aguarda o delay do rate limit antes de cada requisição
+      await delay(RATE_LIMIT_DELAY);
+      
+      console.log(`Processando query: ${serpQuery.query}`);
+      const result = await firecrawl.search(serpQuery.query, {
+        timeout: 15000,
+        scrapeOptions: { formats: ['markdown'] },
+      });
 
-        const newUrls = compact(result.data.map(item => item.url));
-        const newBreadth = Math.ceil(breadth / 2);
-        const newDepth = depth - 1;
+      const newUrls = compact(result.data.map(item => item.url));
+      const newBreadth = Math.ceil(breadth / 2);
+      const newDepth = depth - 1;
 
-        const newLearnings = await processSerpResult({
-          query: serpQuery.query,
-          result,
-          numFollowUpQuestions: newBreadth,
+      const newLearnings = await processSerpResult({
+        query: serpQuery.query,
+        result,
+        numFollowUpQuestions: newBreadth,
+        llmConfig,
+      });
+      
+      const allLearnings = [...learnings, ...newLearnings.learnings];
+      const allUrls = [...visitedUrls, ...newUrls];
+
+      if (newDepth > 0) {
+        console.log(
+          `Researching deeper, breadth: ${newBreadth}, depth: ${newDepth}`,
+        );
+
+        // Aguarda o delay do crawl limit antes de fazer uma nova pesquisa profunda
+        await delay(CRAWL_LIMIT_DELAY);
+
+        const nextQuery = `
+          Previous research goal: ${serpQuery.researchGoal || 'Not specified'}
+          Follow-up research directions: ${newLearnings.followUpQuestions.map(q => `\n${q}`).join('')}
+        `.trim();
+
+        const deeperResult = await deepResearch({
+          query: nextQuery,
+          breadth: newBreadth,
+          depth: newDepth,
+          learnings: allLearnings,
+          visitedUrls: allUrls,
           llmConfig,
         });
-        
-        const allLearnings = [...learnings, ...newLearnings.learnings];
-        const allUrls = [...visitedUrls, ...newUrls];
 
-        if (newDepth > 0) {
-          console.log(
-            `Researching deeper, breadth: ${newBreadth}, depth: ${newDepth}`,
-          );
-
-          const nextQuery = `
-            Previous research goal: ${serpQuery.researchGoal || 'Not specified'}
-            Follow-up research directions: ${newLearnings.followUpQuestions.map(q => `\n${q}`).join('')}
-          `.trim();
-
-          return deepResearch({
-            query: nextQuery,
-            breadth: newBreadth,
-            depth: newDepth,
-            learnings: allLearnings,
-            visitedUrls: allUrls,
-            llmConfig,
-          });
-        } else {
-          return {
-            learnings: allLearnings,
-            visitedUrls: allUrls,
-          };
-        }
-      } catch (error) {
-        console.error('Error searching:', error);
-        return null;
+        results.push(deeperResult);
+      } else {
+        results.push({
+          learnings: allLearnings,
+          visitedUrls: allUrls,
+        });
       }
-    })
-  );
+    } catch (error) {
+      console.error(`Error running query: ${serpQuery.query}: `, error);
+      // Continue com a próxima query em caso de erro
+      continue;
+    }
+  }
 
-  const results = await Promise.all(searchPromises);
-  const validResults = results.filter(result => result !== null) as ResearchResult[];
-
+  // Combina todos os resultados
   return {
-    learnings: [...new Set(validResults.flatMap(r => r.learnings))],
-    visitedUrls: [...new Set(validResults.flatMap(r => r.visitedUrls))],
+    learnings: [...new Set(results.flatMap(r => r?.learnings || []))],
+    visitedUrls: [...new Set(results.flatMap(r => r?.visitedUrls || []))],
   };
 }
 
@@ -288,74 +317,79 @@ export async function deepResearch({
     numQueries: breadth,
     llmConfig,
   });
-  
-  const limit = pLimit(ConcurrencyLimit);
 
-  const results = await Promise.all(
-    serpQueries.map(serpQuery =>
-      limit(async () => {
-        try {
-          if (!llmConfig.firecrawlKey) {
-            throw new Error('Firecrawl API key is required');
-          }
+  // Search and process results in sequence with rate limiting
+  const results = [];
+  for (const serpQuery of serpQueries) {
+    try {
+      // Aguarda o delay do rate limit antes de cada requisição
+      await delay(RATE_LIMIT_DELAY);
+      
+      console.log(`Processando query: ${serpQuery.query}`);
+      
+      if (!llmConfig.firecrawlKey) {
+        throw new Error('Firecrawl API key is required');
+      }
 
-          const result = await createFirecrawl(llmConfig.firecrawlKey).search(serpQuery.query, {
-            timeout: 15000,
-            scrapeOptions: { formats: ['markdown'] },
-          });
+      const result = await createFirecrawl(llmConfig.firecrawlKey).search(serpQuery.query, {
+        timeout: 15000,
+        scrapeOptions: { formats: ['markdown'] },
+      });
 
-          const newUrls = compact(result.data.map(item => item.url));
-          const newBreadth = Math.ceil(breadth / 2);
-          const newDepth = depth - 1;
+      const newUrls = compact(result.data.map(item => item.url));
+      const newBreadth = Math.ceil(breadth / 2);
+      const newDepth = depth - 1;
 
-          const newLearnings = await processSerpResult({
-            query: serpQuery.query,
-            result,
-            numFollowUpQuestions: newBreadth,
-            llmConfig,
-          });
-          
-          const allLearnings = [...learnings, ...newLearnings.learnings];
-          const allUrls = [...visitedUrls, ...newUrls];
+      const newLearnings = await processSerpResult({
+        query: serpQuery.query,
+        result,
+        numFollowUpQuestions: newBreadth,
+        llmConfig,
+      });
+      
+      const allLearnings = [...learnings, ...newLearnings.learnings];
+      const allUrls = [...visitedUrls, ...newUrls];
 
-          if (newDepth > 0) {
-            console.log(
-              `Researching deeper, breadth: ${newBreadth}, depth: ${newDepth}`,
-            );
+      if (newDepth > 0) {
+        console.log(
+          `Researching deeper, breadth: ${newBreadth}, depth: ${newDepth}`,
+        );
 
-            const nextQuery = `
-              Previous research goal: ${serpQuery.researchGoal || 'Not specified'}
-              Follow-up research directions: ${newLearnings.followUpQuestions.map(q => `\n${q}`).join('')}
-            `.trim();
+        // Aguarda o delay do crawl limit antes de fazer uma nova pesquisa profunda
+        await delay(CRAWL_LIMIT_DELAY);
 
-            return deepResearch({
-              query: nextQuery,
-              breadth: newBreadth,
-              depth: newDepth,
-              learnings: allLearnings,
-              visitedUrls: allUrls,
-              llmConfig,
-            });
-          } else {
-            return {
-              learnings: allLearnings,
-              visitedUrls: allUrls,
-            };
-          }
-        } catch (e) {
-          console.error(`Error running query: ${serpQuery.query}: `, e);
-          return {
-            learnings: [],
-            visitedUrls: [],
-          };
-        }
-      }),
-    ),
-  );
+        const nextQuery = `
+          Previous research goal: ${serpQuery.researchGoal || 'Not specified'}
+          Follow-up research directions: ${newLearnings.followUpQuestions.map(q => `\n${q}`).join('')}
+        `.trim();
 
+        const deeperResult = await deepResearch({
+          query: nextQuery,
+          breadth: newBreadth,
+          depth: newDepth,
+          learnings: allLearnings,
+          visitedUrls: allUrls,
+          llmConfig,
+        });
+
+        results.push(deeperResult);
+      } else {
+        results.push({
+          learnings: allLearnings,
+          visitedUrls: allUrls,
+        });
+      }
+    } catch (error) {
+      console.error(`Error running query: ${serpQuery.query}: `, error);
+      // Continue com a próxima query em caso de erro
+      continue;
+    }
+  }
+
+  // Combina todos os resultados
   return {
-    learnings: [...new Set(results.flatMap(r => r.learnings))],
-    visitedUrls: [...new Set(results.flatMap(r => r.visitedUrls))],
+    learnings: [...new Set(results.flatMap(r => r?.learnings || []))],
+    visitedUrls: [...new Set(results.flatMap(r => r?.visitedUrls || []))],
   };
 }
   

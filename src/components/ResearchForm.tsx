@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { CircularProgress } from "@/components/ui/circular-progress";
+import { Alert } from "@/components/ui/alert";
 import { Markdown } from '@/components/Markdown';
 import { LLMConfig as LLMConfigType } from '@/ai/providers';
 import { loadConfig } from '@/ai/providers';
@@ -24,7 +25,11 @@ type ResearchStatus = {
     total: number;
   };
   currentTask?: string;
-  error?: string | null;
+  error?: {
+    title?: string;
+    message: string;
+    retryable?: boolean;
+  } | null;
 };
 
 interface ResearchFormProps {
@@ -83,7 +88,8 @@ export function ResearchForm({
     try {
       setStatus({ 
         stage: 'collecting-feedback',
-        message: 'Gerando perguntas de acompanhamento...' 
+        message: 'Gerando perguntas de acompanhamento...',
+        error: null
       });
       
       const feedbackRes = await fetch('/api/feedback', {
@@ -92,19 +98,33 @@ export function ResearchForm({
         body: JSON.stringify({ query, llmConfig }),
       });
       
-      const questions = await feedbackRes.json();
-      setFollowUpQuestions(questions);
+      const data = await feedbackRes.json();
+      
+      if (!feedbackRes.ok) {
+        throw new Error(data.error || 'Erro ao gerar perguntas de acompanhamento');
+      }
+
+      if (!Array.isArray(data)) {
+        throw new Error('Formato de resposta inválido');
+      }
+
+      setFollowUpQuestions(data);
       
       setStatus({ 
         stage: 'collecting-feedback',
-        message: 'Por favor, responda estas perguntas para ajudar a focar sua pesquisa.' 
+        message: 'Por favor, responda estas perguntas para ajudar a focar sua pesquisa.',
+        error: null
       });
       
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error:', error);
       setStatus({ 
         stage: 'idle',
-        message: 'Ocorreu um erro. Por favor, tente novamente.' 
+        error: {
+          title: 'Erro ao Gerar Perguntas',
+          message: error.message || 'Ocorreu um erro ao gerar as perguntas. Por favor, tente novamente.',
+          retryable: true
+        }
       });
     }
   };
@@ -121,7 +141,8 @@ export function ResearchForm({
     try {
       setStatus({ 
         stage: 'researching',
-        message: 'Pesquisa em andamento...' 
+        message: 'Pesquisa em andamento...',
+        error: null
       });
 
       const researchRes = await fetch('/api/research', {
@@ -137,9 +158,19 @@ export function ResearchForm({
         }),
       });
 
-      const { report } = await researchRes.json();
-      setReport(report);
-      setStatus({ stage: 'complete' });
+      if (!researchRes.ok) {
+        const error = await researchRes.json();
+        throw new Error(error.error || 'Erro ao realizar a pesquisa');
+      }
+
+      const data = await researchRes.json();
+      
+      if (!data.report) {
+        throw new Error('Relatório não gerado');
+      }
+
+      setReport(data.report);
+      setStatus({ stage: 'complete', error: null });
       
       // Salvar no histórico
       const historyItem = {
@@ -148,8 +179,8 @@ export function ResearchForm({
         timestamp: Date.now(),
         followUpQuestions,
         answers,
-        preview: report.split('\n\n')[0].slice(0, 200) + '...',
-        report,
+        preview: data.report.split('\n\n')[0].slice(0, 200) + '...',
+        report: data.report,
         llmConfig: {
           provider: llmConfig.provider,
           model: llmConfig.model,
@@ -163,14 +194,19 @@ export function ResearchForm({
       const savedHistory = localStorage.getItem('research_history');
       const history = savedHistory ? JSON.parse(savedHistory) : [];
       history.unshift(historyItem);
-      localStorage.setItem('research_history', JSON.stringify(history.slice(0, 50))); // Manter apenas as últimas 50 pesquisas
+      localStorage.setItem('research_history', JSON.stringify(history.slice(0, 50)));
       
-      onReportGenerated(report);
-    } catch (error) {
+      onReportGenerated(data.report);
+    } catch (error: any) {
       console.error('Error:', error);
       setStatus({
         stage: 'idle',
-        message: 'Ocorreu um erro. Por favor, tente novamente.',
+        error: {
+          title: 'Erro na Pesquisa',
+          message: error.message === 'Failed to fetch' 
+            ? 'Erro de conexão. Por favor, verifique sua internet e tente novamente.'
+            : error.message || 'Ocorreu um erro durante a pesquisa. Por favor, tente novamente.'
+        }
       });
     }
   };
@@ -278,13 +314,16 @@ export function ResearchForm({
   };
 
   const handleReset = () => {
-    const isConfirmed = window.confirm(
-      "Are you sure? This will clear the current research progress."
-    )
-
-    if (isConfirmed) {
-      window.location.reload();
-    }
+    // Limpa todos os estados para seus valores iniciais
+    setQuery('');
+    setBreadth('2');
+    setDepth('4');
+    setStatus({ stage: 'idle' });
+    setFollowUpQuestions([]);
+    setAnswers([]);
+    setReport(null);
+    setMarkdownContent('');
+    setCopyStatus({});
   }
 
   const handleRestoreHistory = (historyItem: any) => {
@@ -303,8 +342,20 @@ export function ResearchForm({
   return (
     <div className="space-y-8">
       <Card className="bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm border-slate-200 dark:border-slate-800 p-8 rounded-xl shadow-xl">
-        <div className="flex items-center gap-3 mb-8">
-          <h2 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">Sua Pergunta</h2>
+        <div className="flex items-center justify-between gap-3 mb-8">
+          <div className="flex items-center gap-3">
+            <h2 className="text-2xl font-semibold text-slate-900 dark:text-slate-100">Sua Pergunta</h2>
+            <span className="inline-flex items-center rounded-md bg-slate-100 dark:bg-slate-800 px-2 py-1 text-xs font-medium text-slate-600 dark:text-slate-300 ring-1 ring-inset ring-slate-500/10">
+              {llmConfig.provider} - {llmConfig.model}
+            </span>
+          </div>
+          <Button
+            onClick={handleReset}
+            variant="outline"
+            className="border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800"
+          >
+            Nova Pergunta
+          </Button>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">
@@ -366,7 +417,26 @@ export function ResearchForm({
           </Button>
         </form>
 
-        {status.message && (
+        {status.error && (
+          <div className="mt-6 space-y-4">
+            <Alert
+              type="error"
+              title={status.error.title}
+              message={status.error.message}
+              onDismiss={() => setStatus(prev => ({ ...prev, error: null }))}
+            />
+            {status.error.retryable && (
+              <Button
+                onClick={handleSubmit}
+                className="w-full bg-slate-900 hover:bg-slate-800 dark:bg-slate-200 dark:hover:bg-slate-300 dark:text-slate-900"
+              >
+                Tentar Novamente
+              </Button>
+            )}
+          </div>
+        )}
+
+        {status.message && !status.error && (
           <div className="mt-6">
             {(status.stage === 'researching' || 
               (status.stage === 'collecting-feedback' && followUpQuestions.length === 0)) ? (
