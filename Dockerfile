@@ -32,10 +32,10 @@ RUN apk add --no-cache wget
 
 # Set environment variables
 ENV NODE_ENV=production
-ENV PORT=3000
+ENV PORT=${PORT:-3005}
 
 # Expose port
-EXPOSE 3000
+EXPOSE ${PORT:-3005}
 
 # Start application
 CMD ["npm", "start"]

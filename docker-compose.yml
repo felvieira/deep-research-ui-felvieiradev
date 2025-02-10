@@ -11,12 +11,12 @@ services:
     env_file:
       - .env.local
     ports:
-      - "3000:3000"
+      - "${PORT:-3005}:3005"
     environment:
       - NODE_ENV=production
-      - PORT=3000
+      - PORT=3005
     healthcheck:
-      test: ["CMD", "wget", "--spider", "http://localhost:3000"]
+      test: ["CMD", "wget", "--spider", "http://localhost:3005"]
       interval: 10s
       timeout: 5s
       retries: 3
